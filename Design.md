@@ -21,10 +21,10 @@ We are making a Proof of Work blockchain protocol with at least 1 tracker, and 3
 
 ## 4. Blockchain
 - **Block fields:** _index, prev_hash, timestamp, nonce, txs, hash_
-- **Mining (PoW):** _difficulty rule_
-- **Broadcast:** _how a new block is sent out_
-- **Verification:** _checks done on receive_
-- **Forks:** _resolution rule (e.g., longest chain)_
+- **Mining (PoW):** SHA-256 of the block header must have N leading zero bits (start with N=4).
+- **Broadcast:** When a peer mines a block, it sends NEW_BLOCK to every peer on its list.
+- **Verification:**  On receive, check (1) prev_hash matches local tip, (2) hash recomputes correctly, (3) hash meets difficulty, (4) all txs are valid.
+- **Forks:** Longest chain wins. If an incoming block's prev_hash doesn't match our tip, request the sender's full chain and switch if it's longer.
 
 ## 5. Demo Application
 - What it does:
