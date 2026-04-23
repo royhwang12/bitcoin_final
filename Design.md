@@ -5,18 +5,19 @@
 ---
 
 ## 1. Overview
-_1–2 sentences: what you're building and which demo app you chose._
+We are making a Proof of Work blockchain protocol with at least 1 tracker, and 3 clients. We will set the mining difficulty low enough so we can average one block every 15-30 (we can change this time) seconds. 
 
 ## 2. Tech Stack
-- Language:
-- Networking:
-- Crypto / hashing:
-- GUI (if any):
+- Language: Python
+- Networking: socket, asyncio, socketserver
+- Crypto / hashing: hashlib (sha-256)
+- GUI (if any): tkinter
 
 ## 3. Network (Tracker + Peers)
-- How peers join / leave:
-- How the peer list is updated and shared:
-- How peers talk to each other:
+- Setup: At least 1 tracker and 3 peers
+- How peers join / leave: Peers send REGISTER/UNREGISTER messages to the tracker on startup/shutdown, with heartbeats so the tracker can drop crashed peers.
+- How the peer list is updated and shared:  Tracker pushes the updated list to all peers after any join/leave.
+- How peers talk to each other: Each peer runs its own TCP listener and sends blocks/transactions directly to every peer on its list, dropping duplicates by hash
 
 ## 4. Blockchain
 - **Block fields:** _index, prev_hash, timestamp, nonce, txs, hash_
