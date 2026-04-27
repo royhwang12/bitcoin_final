@@ -5,7 +5,10 @@ import hashlib
 from base64 import b64encode, b64decode
 from collections import deque
 import re
-from merkle_utils import MerkleProof, hash_internal_node, hash_leaf
+try:
+    from .merkle_utils import MerkleProof, hash_internal_node, hash_leaf
+except ImportError:
+    from merkle_utils import MerkleProof, hash_internal_node, hash_leaf
 
 merkle_proof_file = "merkle_proof.txt"      # File containing the Merkle proof to verify.   
                            # Change this to load a different file. 

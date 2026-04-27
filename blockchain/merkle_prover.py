@@ -6,7 +6,10 @@ import hashlib
 from base64 import b64encode, b64decode
 import math
 
-from merkle_utils import MerkleProof, hash_internal_node, hash_leaf
+try:
+    from .merkle_utils import MerkleProof, hash_internal_node, hash_leaf
+except ImportError:
+    from merkle_utils import MerkleProof, hash_internal_node, hash_leaf
 
 merkle_proof_file = "merkle_proof.txt"
 
