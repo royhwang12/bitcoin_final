@@ -29,13 +29,21 @@ We are making a Proof of Work blockchain protocol with at least 1 tracker, and 3
 
 ## 5. Demo Application
 - What it does:
+- A simple wallet/demo app that creates, signs, broadcasts, and accepts peer-to-peer transactions.
+- Users can submit transactions from one wallet address to another, and peers mine blocks containing those transactions.
 - Transaction format:
+- Each transaction is a JSON-like object containing `sender`, `recipient`, `amount`, `timestamp`, and `signature`.
+- Optional `txid` can be computed as `SHA-256(sender|recipient|amount|timestamp|signature)` for duplicate detection.
 - Validity rules:
+- Transactions must be signed by the sender's private key and include a valid signature for the `sender` address.
+- The sender must have sufficient balance according to the local UTXO/account state before the transaction is accepted.
+- Duplicate transactions and malformed data are rejected.
+- Blocks accept only valid transactions and require PoW difficulty before being broadcast.
 
 ## 6. Resilience Demos
-- Invalid transaction →
-- Tampered block →
-- Fork scenario →
+- Invalid transaction → Submit a transaction where the `sender` balance is insufficient or the signature is invalid; the receiving peer should reject it and keep it out of the mempool.
+- Tampered block → Modify a mined block's `txs` or `nonce` before sending it; the recipient peer should recompute the hash, detect the mismatch, and reject the block.
+- Fork scenario → Create two competing blocks at the same height from different peers; the network should keep both temporarily, then adopt the longer chain once one peer mines the next block.
 
 ## 7. Extra Credit (planned)
 - [ ] GUI
@@ -52,5 +60,14 @@ We are making a Proof of Work blockchain protocol with at least 1 tracker, and 3
 | Demo app | |
 | Resilience demos | |
 
-## 9. Open Questions
--
+## 9. Work Partition
+- Ian: tracker and peer networking, registration/heartbeat, peer list synchronization, broadcast message handling.
+- Roy: blockchain core, mining loop, PoW validation, block verification, fork resolution, chain management.
+- Alex: demo application, transaction format/signing, wallet UI or CLI, transaction validity rules, end-to-end demo scenarios.
+
+## 10. Open Questions
+- Should the tracker and peer components be separate processes, or can they be combined for the demo?
+- What is the preferred transaction model: simple account balances or UTXO-style outputs?
+- Do we need a specific number of transactions per block for the demo, or is one transaction per block acceptable?
+- Is a CLI wallet/demo sufficient, or do you expect a simple GUI as well?
+- Should the demo emphasize network resilience and fork handling over transaction signing and validation?
