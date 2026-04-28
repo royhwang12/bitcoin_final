@@ -60,20 +60,54 @@ class Chain:
 
         TODO: implement the four checks.
         """
+        if block.index != self.height + 1:
+            raise ValidationError("bad block index")
         if block.prev_hash != self.tip.hash():
             raise ValidationError("prev_hash does not match tip")
         if not meets_difficulty(block.hash(), self.difficulty_bits):
             raise ValidationError("hash does not meet difficulty")
-        # TODO: validate every tx via validate_tx
-        raise NotImplementedError
+
+        tmp_balances = dict(self.balances)
+        tmp_nonces = dict(self.nonces)
+        seen_tx_hashes: set[str] = set()
+
+        for tx in block.txs:
+            txh = tx.hash().hex()
+            if txh in seen_tx_hashes:
+                raise ValidationError("duplicate tx in block")
+            seen_tx_hashes.add(txh)
+
+            if not tx.verify_signature():
+                raise ValidationError("bad signature")
+            if tx.amount <= 0:
+                raise ValidationError("amount must be positive")
+
+            sender_balance = tmp_balances.get(tx.sender, 0)
+            if sender_balance < tx.amount:
+                raise ValidationError("insufficient balance")
+
+            expected_nonce = tmp_nonces.get(tx.sender, 0) + 1
+            if tx.nonce != expected_nonce:
+                raise ValidationError(
+                    f"bad nonce: expected {expected_nonce}, got {tx.nonce}"
+                )
+
+            tmp_balances[tx.sender] = sender_balance - tx.amount
+            tmp_balances[tx.recipient] = tmp_balances.get(tx.recipient, 0) + tx.amount
+            tmp_nonces[tx.sender] = tx.nonce
 
     # ---- mutation ------------------------------------------------------
 
     def append(self, block: Block) -> None:
         """Validate and append. Updates balances/nonces."""
         self.validate_block(block)
+
+        for tx in block.txs:
+            self.balances[tx.sender] = self.balances.get(tx.sender, 0) - tx.amount
+            self.balances[tx.recipient] = self.balances.get(tx.recipient, 0) + tx.amount
+            self.nonces[tx.sender] = tx.nonce
+
         self.blocks.append(block)
-        # TODO: apply tx effects to self.balances / self.nonces
 
     def replace_if_longer(self, candidate: Iterable[Block]) -> bool:
         """Design.md §4 fork rule: longest chain wins.
