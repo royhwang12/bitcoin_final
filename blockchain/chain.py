@@ -42,8 +42,18 @@ class Chain:
         """
         if not tx.verify_signature():
             raise ValidationError("bad signature")
-        # TODO: balance & nonce checks against self.balances / self.nonces
-        raise NotImplementedError
+        if tx.amount <= 0:
+            raise ValidationError("amount must be positive")
+
+        sender_balance = self.balances.get(tx.sender, 0)
+        if sender_balance < tx.amount:
+            raise ValidationError("insufficient balance")
+
+        expected_nonce = self.nonces.get(tx.sender, 0) + 1
+        if tx.nonce != expected_nonce:
+            raise ValidationError(
+                f"bad nonce: expected {expected_nonce}, got {tx.nonce}"
+            )
 
     def validate_block(self, block: Block) -> None:
         """Design.md §4 verification: prev_hash, recompute, difficulty, txs.
