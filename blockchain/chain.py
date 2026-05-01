@@ -25,6 +25,13 @@ class Chain:
     balances: Dict[str, int] = field(default_factory=dict)
     nonces: Dict[str, int] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Snapshot the "seed" account state at construction time so that
+        # `replace_if_longer` can replay a candidate chain from genesis with
+        # the same starting balances/nonces every peer sees.
+        self._seed_balances: Dict[str, int] = dict(self.balances)
+        self._seed_nonces: Dict[str, int] = dict(self.nonces)
+
     @property
     def tip(self) -> Block:
         return self.blocks[-1]
@@ -115,10 +122,33 @@ class Chain:
         Re-validate the entire candidate chain from genesis; only swap in if
         it validates AND is strictly longer than ours.
         Returns True if we replaced, False otherwise.
-
-        TODO: implement.
         """
-        raise NotImplementedError
+        candidate_blocks = list(candidate)
+        if len(candidate_blocks) <= len(self.blocks):
+            return False
+        if not candidate_blocks:
+            return False
+        if candidate_blocks[0].hash() != self.blocks[0].hash():
+            return False
+
+        # Replay the candidate from genesis against a temp chain seeded with
+        # the same starting state we were constructed with.
+        temp = Chain(
+            blocks=[candidate_blocks[0]],
+            difficulty_bits=self.difficulty_bits,
+            balances=dict(self._seed_balances),
+            nonces=dict(self._seed_nonces),
+        )
+        try:
+            for block in candidate_blocks[1:]:
+                temp.append(block)
+        except ValidationError:
+            return False
+
+        self.blocks = temp.blocks
+        self.balances = temp.balances
+        self.nonces = temp.nonces
+        return True
 
     # ---- mempool helpers (optional, useful for §5 demo) ---------------
 
