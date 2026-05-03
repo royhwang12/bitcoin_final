@@ -41,6 +41,10 @@ MINE_IDLE_SLEEP_S = 0.5
 MINING_BOOTSTRAP_S = 1.0
 # Read timeout for a CHAIN response after we send GET_CHAIN.
 CHAIN_REQUEST_TIMEOUT_S = 5.0
+# Bound on TCP connect for outbound peer-to-peer dials (flood, GET_CHAIN).
+# Without this, a half-open / stuck remote socket can block the caller (often
+# the mining loop) indefinitely.
+PEER_CONNECT_TIMEOUT_S = 2.0
 
 
 log = logging.getLogger("peer")
@@ -125,6 +129,25 @@ class Peer:
         if added or removed:
             log.info("peer set updated: +%s -%s (now=%d)",
                      sorted(added), sorted(removed), len(self.peers))
+        if added:
+            # We have new peers in the network. Two catch-up jobs run in
+            # background so this handler stays snappy:
+            #   1. Pull chains from the network so we don't sit on a stale
+            #      tip and start mining a doomed fork on top of genesis.
+            #   2. Gossip our current mempool to the newcomers so any txs
+            #      we already accepted aren't trapped on this peer until we
+            #      mine them ourselves. (Receivers dedupe via seen_hashes.)
+            asyncio.create_task(self._sync_chain_from_peers())
+            if self.mempool:
+                asyncio.create_task(self._gossip_mempool_to(sorted(added)))
+
+    async def _gossip_mempool_to(self, addrs: List[str]) -> None:
+        """Push every pending tx in our mempool to each address in `addrs`."""
+        snapshot = list(self.mempool)
+        for tx in snapshot:
+            msg = M.Message(M.NEW_TX, {"tx": tx.to_dict()})
+            for addr in addrs:
+                await self._send_to(addr, msg)
 
     # ---- inbound peer<->peer ------------------------------------------
 
@@ -276,7 +299,10 @@ class Peer:
         """
         try:
             host, port_s = addr.split(":")
-            reader, writer = await asyncio.open_connection(host, int(port_s))
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, int(port_s)),
+                timeout=PEER_CONNECT_TIMEOUT_S,
+            )
         except Exception as e:
             log.debug("GET_CHAIN connect to %s failed: %s", addr, e)
             return
@@ -386,6 +412,12 @@ class Peer:
             await asyncio.sleep(0.05)
         if self.peers:
             log.info("mining bootstrap done; %d peer(s) known", len(self.peers))
+            # Catch up to the longest chain on the network before mining,
+            # otherwise we'd start producing a doomed fork on top of genesis
+            # while everyone else is at a higher tip.
+            await self._sync_chain_from_peers()
+            log.info("mining bootstrap chain sync done; height=%d",
+                     self.chain.height)
         else:
             log.info("mining bootstrap timeout; mining solo")
 
@@ -426,23 +458,40 @@ class Peer:
             self._purge_mempool_against_chain()
             log.info("mined block %d (height=%d, nonce=%d)",
                      mined.index, self.chain.height, mined.nonce)
-            await self._flood(M.Message(M.NEW_BLOCK, {"block": mined.to_dict()}))
+            # Fire-and-forget the broadcast: mining must never block on the
+            # network. Per-dial timeouts inside _flood still bound the work.
+            asyncio.create_task(
+                self._flood(M.Message(M.NEW_BLOCK, {"block": mined.to_dict()}))
+            )
             # Tiny pause so we don't pin a CPU when the mempool is empty.
             if not self.mempool:
                 await asyncio.sleep(MINE_IDLE_SLEEP_S)
 
     # ---- outbound flooding --------------------------------------------
 
+    async def _send_to(self, addr: str, msg: M.Message) -> None:
+        """Open a one-shot connection to `addr` and send `msg`. Best-effort.
+
+        Bounded by PEER_CONNECT_TIMEOUT_S so a single stuck remote can't
+        stall the caller (notably the mining loop) indefinitely.
+        """
+        try:
+            host, port_s = addr.split(":")
+            _, w = await asyncio.wait_for(
+                asyncio.open_connection(host, int(port_s)),
+                timeout=PEER_CONNECT_TIMEOUT_S,
+            )
+            try:
+                await M.send(w, msg)
+            finally:
+                w.close()
+        except Exception as e:
+            log.debug("send to %s failed: %s", addr, e)
+
     async def _flood(self, msg: M.Message) -> None:
         """Send `msg` to every peer in self.peers. Best-effort, no retries."""
         for addr in list(self.peers):
-            try:
-                host, port_s = addr.split(":")
-                _, w = await asyncio.open_connection(host, int(port_s))
-                await M.send(w, msg)
-                w.close()
-            except Exception as e:
-                log.debug("flood to %s failed: %s", addr, e)
+            await self._send_to(addr, msg)
 
 
 def main() -> None:

@@ -11,7 +11,7 @@ import time
 from .block import Block
 
 
-DEFAULT_DIFFICULTY_BITS = 4
+DEFAULT_DIFFICULTY_BITS = 24
 
 
 def meets_difficulty(block_hash: bytes, difficulty_bits: int) -> bool:
