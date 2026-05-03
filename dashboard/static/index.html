@@ -297,13 +297,24 @@
     }
 
     function fillSelect(select, items, label, includeEmpty = false) {
+      // Don't disturb a select the user is currently interacting with;
+      // rebuilding mid-click would destroy the option being clicked and
+      // snap the value back to the first entry.
+      if (document.activeElement === select) return;
+
+      const desired = (includeEmpty ? [["", "None"]] : [])
+        .concat(items.map((item) => [String(item.id), label(item)]));
+      const current = [...select.options].map((option) => [option.value, option.text]);
+
+      const unchanged =
+        desired.length === current.length &&
+        desired.every(([value, text], i) => current[i][0] === value && current[i][1] === text);
+      if (unchanged) return;
+
       const previous = select.value;
       select.innerHTML = "";
-      if (includeEmpty) {
-        select.append(new Option("None", ""));
-      }
-      for (const item of items) {
-        select.append(new Option(label(item), item.id));
+      for (const [value, text] of desired) {
+        select.append(new Option(text, value));
       }
       if ([...select.options].some((option) => option.value === previous)) {
         select.value = previous;
