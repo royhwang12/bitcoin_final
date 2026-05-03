@@ -1,0 +1,25 @@
+[project]
+name = "bitcoin-final"
+version = "0.1.0"
+description = "Computer Networks final project: a small P2P proof-of-work blockchain."
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography",
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+[project.scripts]
+blockchain-dashboard = "dashboard.app:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["blockchain*", "dashboard*", "net*"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

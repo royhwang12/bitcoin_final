@@ -161,15 +161,25 @@ class Peer:
 
     # ---- handlers ------------------------------------------------------
 
+    async def submit_tx(self, tx: Transaction) -> str:
+        """Validate, remember, and flood a locally-created transaction."""
+        return await self._accept_tx(tx, skip_seen=False)
+
     async def _on_new_tx(self, tx: Transaction) -> None:
-        h = tx.hash().hex()
-        if not self._mark_seen(h):
-            return
         try:
-            self.chain.validate_tx(tx)
+            await self._accept_tx(tx, skip_seen=True)
         except ValidationError as e:
+            h = tx.hash().hex()
             log.info("dropping invalid tx %s: %s", h[:12], e)
-            return
+
+    async def _accept_tx(self, tx: Transaction, *, skip_seen: bool) -> str:
+        h = tx.hash().hex()
+        if skip_seen and h in self.seen_hashes:
+            return h
+        self._validate_tx_for_mempool(tx)
+        if h in self.seen_hashes and self._has_pending_tx(h):
+            return h
+        self._mark_seen(h)
         # Replace any pre-existing pending tx from the same sender at this
         # nonce so the latest signature wins; otherwise append.
         replaced = False
@@ -182,6 +192,45 @@ class Peer:
             self.mempool.append(tx)
         log.info("accepted tx %s into mempool (size=%d)", h[:12], len(self.mempool))
         await self._flood(M.Message(M.NEW_TX, {"tx": tx.to_dict()}))
+        return h
+
+    def _has_pending_tx(self, h: str) -> bool:
+        return any(tx.hash().hex() == h for tx in self.mempool)
+
+    def _validate_tx_for_mempool(self, tx: Transaction) -> None:
+        sim_balances: Dict[str, int] = dict(self.chain.balances)
+        sim_nonces: Dict[str, int] = dict(self.chain.nonces)
+        ordered = sorted(self.mempool, key=lambda t: (t.sender, t.nonce))
+        for pending in ordered:
+            if pending.sender != tx.sender:
+                continue
+            if pending.hash() == tx.hash():
+                continue
+            if pending.amount <= 0 or not pending.verify_signature():
+                continue
+            sender_balance = sim_balances.get(pending.sender, 0)
+            if sender_balance < pending.amount:
+                continue
+            if pending.nonce != sim_nonces.get(pending.sender, 0) + 1:
+                continue
+            sim_balances[pending.sender] = sender_balance - pending.amount
+            sim_balances[pending.recipient] = (
+                sim_balances.get(pending.recipient, 0) + pending.amount
+            )
+            sim_nonces[pending.sender] = pending.nonce
+
+        if not tx.verify_signature():
+            raise ValidationError("bad signature")
+        if tx.amount <= 0:
+            raise ValidationError("amount must be positive")
+        sender_balance = sim_balances.get(tx.sender, 0)
+        if sender_balance < tx.amount:
+            raise ValidationError("insufficient balance")
+        expected_nonce = sim_nonces.get(tx.sender, 0) + 1
+        if tx.nonce != expected_nonce:
+            raise ValidationError(
+                f"bad nonce: expected {expected_nonce}, got {tx.nonce}"
+            )
 
     async def _on_new_block(self, block: Block) -> None:
         h = block.hash().hex()
