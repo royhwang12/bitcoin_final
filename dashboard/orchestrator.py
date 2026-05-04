@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from blockchain.chain import Chain
+from blockchain.pow import DEFAULT_DIFFICULTY_BITS
 from blockchain.tx import Transaction
 from blockchain.wallet import Wallet
 from net.peer import Peer
@@ -16,8 +17,6 @@ from net.tracker import Tracker
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_TRACKER_PORT = 9000
 DEFAULT_FIRST_PEER_PORT = 9201
-DEFAULT_DIFFICULTY_BITS = 15
-# For demo maybe we alter to make it faster or slower 
 
 
 @dataclass
