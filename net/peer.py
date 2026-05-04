@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Set
 
 from blockchain.block import Block
 from blockchain.chain import Chain, ValidationError
-from blockchain.pow import meets_difficulty
+from blockchain.pow import mine_chunk
 from blockchain.tx import Transaction
 
 from . import messages as M
@@ -433,12 +433,9 @@ class Peer:
                 # a fresh template on the new tip.
                 if self.chain.tip.hash() != tip_at_start:
                     break
-                for _ in range(MINE_CHUNK_NONCES):
-                    if meets_difficulty(template.hash(), self.chain.difficulty_bits):
-                        mined = template
-                        break
-                    template.nonce += 1
-                if mined is not None:
+                if mine_chunk(template, self.chain.difficulty_bits,
+                              MINE_CHUNK_NONCES):
+                    mined = template
                     break
                 await asyncio.sleep(0)
 

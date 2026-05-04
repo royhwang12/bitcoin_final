@@ -16,7 +16,8 @@ from net.tracker import Tracker
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_TRACKER_PORT = 9000
 DEFAULT_FIRST_PEER_PORT = 9201
-DEFAULT_DIFFICULTY_BITS = 24
+DEFAULT_DIFFICULTY_BITS = 15
+# For demo maybe we alter to make it faster or slower 
 
 
 @dataclass

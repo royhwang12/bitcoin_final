@@ -25,11 +25,6 @@ class Block:
     timestamp: float
     nonce: int
     txs: List[Transaction] = field(default_factory=list)
-    # Lazily computed cache of the tx commitment. Excluded from repr/eq/hash
-    # so two Blocks with identical fields still compare equal regardless of
-    # whether one has materialized the cache. Mining mutates `nonce` billions
-    # of times; without this cache, every nonce attempt would re-hash every
-    # transaction in the block, making block time scale ~linearly in tx count.
     _tx_commitment_cache: bytes | None = field(
         default=None, repr=False, compare=False,
     )

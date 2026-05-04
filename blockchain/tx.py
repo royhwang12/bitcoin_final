@@ -16,11 +16,11 @@ from . import wallet as _wallet
 
 @dataclass
 class Transaction:
-    sender: str       # hex-encoded DER pubkey of sender (see Wallet.address)
-    recipient: str    # hex-encoded DER pubkey of recipient
+    sender: str
+    recipient: str
     amount: int
-    nonce: int        # per-sender monotonically increasing
-    signature: Optional[str] = None  # hex-encoded ECDSA signature, set by sign()
+    nonce: int
+    signature: Optional[str] = None
 
     def signing_payload(self) -> bytes:
         """Canonical bytes signed by the sender. MUST exclude the signature."""

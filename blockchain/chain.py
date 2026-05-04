@@ -26,9 +26,6 @@ class Chain:
     nonces: Dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Snapshot the "seed" account state at construction time so that
-        # `replace_if_longer` can replay a candidate chain from genesis with
-        # the same starting balances/nonces every peer sees.
         self._seed_balances: Dict[str, int] = dict(self.balances)
         self._seed_nonces: Dict[str, int] = dict(self.nonces)
 
@@ -39,8 +36,6 @@ class Chain:
     @property
     def height(self) -> int:
         return len(self.blocks) - 1
-
-    # ---- validation ----------------------------------------------------
 
     def validate_tx(self, tx: Transaction, *, applied_now: bool = False) -> None:
         """Design.md §5 validity rules. Raises ValidationError on failure.
@@ -103,8 +98,6 @@ class Chain:
             tmp_balances[tx.recipient] = tmp_balances.get(tx.recipient, 0) + tx.amount
             tmp_nonces[tx.sender] = tx.nonce
 
-    # ---- mutation ------------------------------------------------------
-
     def append(self, block: Block) -> None:
         """Validate and append. Updates balances/nonces."""
         self.validate_block(block)
@@ -131,8 +124,6 @@ class Chain:
         if candidate_blocks[0].hash() != self.blocks[0].hash():
             return False
 
-        # Replay the candidate from genesis against a temp chain seeded with
-        # the same starting state we were constructed with.
         temp = Chain(
             blocks=[candidate_blocks[0]],
             difficulty_bits=self.difficulty_bits,
@@ -150,7 +141,6 @@ class Chain:
         self.nonces = temp.nonces
         return True
 
-    # ---- mempool helpers (optional, useful for §5 demo) ---------------
 
     def next_block_template(self, miner_address: str,
                              pending: Optional[List[Transaction]] = None) -> Block:
