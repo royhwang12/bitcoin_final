@@ -3,7 +3,6 @@
 **Authors:** Ian Kammerman, Roy Hwang, Alexander Du
 
 ---
-
 ## 1. Overview
 
 This project implements a small Bitcoin-style proof-of-work blockchain that runs on a local peer-to-peer network. A tracker maintains live peer membership, peers exchange transactions and blocks directly over TCP, and the browser dashboard drives the demo by creating wallets, starting peers, submitting signed transactions, and watching chain state converge.
