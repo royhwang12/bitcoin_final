@@ -5,7 +5,7 @@ Computer Networks final project: a small peer-to-peer proof-of-work blockchain w
 ## Submitted Documents
 
 - `README.md`: code structure, setup, compilation/build notes, and usage.
-- `Design.md`: blockchain design, peer-to-peer protocol, demo application design, and limitations.
+- `DESIGN.md`: blockchain design, peer-to-peer protocol, demo application design, and limitations.
 - `TESTING.md`: test strategy, commands, checkpoint list, and observed results.
 
 ## Code Structure
@@ -13,7 +13,7 @@ Computer Networks final project: a small peer-to-peer proof-of-work blockchain w
 ```text
 bitcoin_final/
   README.md
-  Design.md
+  DESIGN.md
   TESTING.md
   pyproject.toml
   uv.lock
