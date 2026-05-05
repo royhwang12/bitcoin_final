@@ -1,73 +1,172 @@
-# Design Document: P2P Blockchain + [App Name]
+# Design Document: P2P Proof-of-Work Blockchain
 
 **Authors:** Ian Kammerman, Roy Hwang, Alexander Du
 
 ---
 
 ## 1. Overview
-We are making a Proof of Work blockchain protocol with at least 1 tracker, and 3 clients. We will set the mining difficulty low enough so we can average one block every 15-30 (we can change this time) seconds. 
 
-## 2. Tech Stack
-- Language: Python
-- Networking: socket, asyncio, socketserver
-- Crypto / hashing: hashlib (sha-256)
-- GUI (if any): tkinter
+This project implements a small Bitcoin-style proof-of-work blockchain that runs on a local peer-to-peer network. A tracker maintains live peer membership, peers exchange transactions and blocks directly over TCP, and the browser dashboard drives the demo by creating wallets, starting peers, submitting signed transactions, and watching chain state converge.
 
-## 3. Network (Tracker + Peers)
-- Setup: At least 1 tracker and 3 peers
-- How peers join / leave: Peers send REGISTER/UNREGISTER messages to the tracker on startup/shutdown, with heartbeats so the tracker can drop crashed peers.
-- How the peer list is updated and shared:  Tracker pushes the updated list to all peers after any join/leave.
-- How peers talk to each other: Each peer runs its own TCP listener and sends blocks/transactions directly to every peer on its list, dropping duplicates by hash
+The target demo uses one tracker and at least three peers on localhost. One or more peers can mine, while all peers validate incoming transactions and blocks before accepting or forwarding them.
 
-## 4. Blockchain
-- **Block fields:** _index, prev_hash, timestamp, nonce, txs, hash_
-- **Mining (PoW):** SHA-256 of the block header must have N leading zero bits (start with N=4).
-- **Broadcast:** When a peer mines a block, it sends NEW_BLOCK to every peer on its list.
-- **Verification:**  On receive, check (1) prev_hash matches local tip, (2) hash recomputes correctly, (3) hash meets difficulty, (4) all txs are valid.
-- **Forks:** Longest chain wins. If an incoming block's prev_hash doesn't match our tip, request the sender's full chain and switch if it's longer.
-- **Signatures:** ECDSA
+## 2. Blockchain Design
 
-## 5. Demo Application
-- What it does:
-- A simple wallet/demo app that creates, signs, broadcasts, and accepts peer-to-peer transactions.
-- Users can submit transactions from one wallet address to another, and peers mine blocks containing those transactions.
-- Transaction format:
-- Each transaction is a JSON-like object containing `sender`, `recipient`, `amount`, `timestamp`, and `signature`.
-- Optional `txid` can be computed as `SHA-256(sender|recipient|amount|timestamp|signature)` for duplicate detection.
-- Validity rules:
-- Transactions must be signed by the sender's private key and include a valid signature for the `sender` address.
-- The sender must have sufficient balance according to the local UTXO/account state before the transaction is accepted.
-- Duplicate transactions and malformed data are rejected.
-- Blocks accept only valid transactions and require PoW difficulty before being broadcast.
+The chain uses an account-balance model rather than UTXOs. Wallet addresses are hex-encoded DER SubjectPublicKeyInfo public keys. A wallet signs transactions with ECDSA, and a transaction is valid only if the signature verifies against the sender address.
 
-## 6. Resilience Demos
-- Invalid transaction → Submit a transaction where the `sender` balance is insufficient or the signature is invalid; the receiving peer should reject it and keep it out of the mempool.
-- Tampered block → Modify a mined block's `txs` or `nonce` before sending it; the recipient peer should recompute the hash, detect the mismatch, and reject the block.
-- Fork scenario → Create two competing blocks at the same height from different peers; the network should keep both temporarily, then adopt the longer chain once one peer mines the next block.
+Transactions contain:
 
-## 7. Extra Credit (planned)
-- [ ] GUI
-- [ ] Dynamic difficulty
-- [ ] Merkle tree / multiple txs per block
-- [ ] _[Other]_
+- `sender`: sender wallet address
+- `recipient`: recipient wallet address
+- `amount`: positive integer transfer amount
+- `nonce`: next per-sender sequential nonce
+- `signature`: hex ECDSA signature over the canonical transaction payload
 
-## 8. Timeline
-| Milestone | Date |
-|-----------|------|
-| Network + tracker | |
-| Blockchain + mining | |
-| Broadcast + forks | |
-| Demo app | |
-| Resilience demos | |
+Blocks contain:
 
-## 9. Work Partition
-- Ian: tracker and peer networking, registration/heartbeat, peer list synchronization, broadcast message handling.
-- Roy: blockchain core, mining loop, PoW validation, block verification, fork resolution, chain management.
-- Alex: demo application, transaction format/signing, wallet UI or CLI, transaction validity rules, end-to-end demo scenarios.
+- `index`: block height
+- `prev_hash`: previous block hash as raw bytes, hex when serialized
+- `timestamp`: mining timestamp
+- `nonce`: proof-of-work nonce
+- `txs`: zero or more transactions
+- `hash`: computed SHA-256 block hash, included when serialized for display and transport
 
-## 10. Open Questions
-- Should the tracker and peer components be separate processes, or can they be combined for the demo?
-- What is the preferred transaction model: simple account balances or UTXO-style outputs?
-- Do we need a specific number of transactions per block for the demo, or is one transaction per block acceptable?
-- Is a CLI wallet/demo sufficient, or do you expect a simple GUI as well?
-- Should the demo emphasize network resilience and fork handling over transaction signing and validation?
+The genesis block is deterministic: index `0`, all-zero previous hash, timestamp `0.0`, nonce `0`, and no transactions. This lets every peer start from the same block hash.
+
+## 3. Hashing and Proof of Work
+
+Block hashes are SHA-256 over canonical header bytes:
+
+```text
+index as 8-byte big-endian integer
+|| prev_hash as 32 raw bytes
+|| str(timestamp) as UTF-8
+|| nonce as 8-byte big-endian integer
+|| concatenated transaction hashes
+```
+
+Transaction signing payloads use sorted-key JSON over `sender`, `recipient`, `amount`, and `nonce`. The signature is excluded from the signed payload and included in the transaction hash.
+
+Difficulty is measured in leading zero bits of the block hash. The default runtime difficulty is `24` bits, while tests and the integration demo lower difficulty where needed to keep checks fast. Peer mining uses `mine_chunk()` so CPU-bound nonce search periodically yields back to the asyncio event loop.
+
+## 4. Validation Rules
+
+A transaction is valid when:
+
+- its signature verifies against the sender public key,
+- its amount is positive,
+- the sender has enough balance,
+- its nonce is exactly one greater than the sender's last accepted nonce.
+
+A block is valid when:
+
+- its index extends the local chain by one,
+- its `prev_hash` equals the local tip hash,
+- its hash satisfies the current difficulty,
+- every transaction is valid in order,
+- no transaction hash appears twice within the block,
+- applying all transactions keeps balances non-negative and advances sender nonces sequentially.
+
+When a peer appends a block, it updates balances and nonces, removes mined or now-invalid transactions from the mempool, and floods the block to known peers.
+
+## 5. Peer-to-Peer Protocol
+
+The tracker is responsible for peer discovery only. Peers connect to it, register their listener address, send heartbeats, and unregister on shutdown when possible. The tracker evicts peers that miss heartbeats and pushes a fresh `PEER_LIST` to all registered peers after membership changes.
+
+Peers communicate directly with each other after discovery. Each peer runs a TCP listener for inbound peer messages, keeps a set of known peer addresses, deduplicates transactions and blocks by hash, and uses best-effort one-shot outbound TCP connections for gossip.
+
+The current timing constants are intentionally small for a local demo: peers send `HEARTBEAT` every 5 seconds, the tracker evicts peers after 15 seconds without a heartbeat, and the tracker checks for stale peers every 5 seconds. Peer-to-peer connection attempts are bounded by a 2-second timeout, and chain-request replies are bounded by a 5-second timeout so one unresponsive peer cannot stall gossip or mining.
+
+Every network frame uses a 4-byte big-endian length prefix followed by UTF-8 JSON. Frames larger than 8 MiB are rejected. Every JSON body has this envelope:
+
+```json
+{
+  "type": "MESSAGE_TYPE",
+  "payload": {}
+}
+```
+
+Tracker messages:
+
+- `REGISTER`: peer to tracker, `{"addr": "host:port"}`
+- `HEARTBEAT`: peer to tracker, `{"addr": "host:port"}`
+- `UNREGISTER`: peer to tracker, `{"addr": "host:port"}`
+- `PEER_LIST`: tracker to peer, `{"peers": ["host:port"]}`
+
+Peer messages:
+
+- `NEW_TX`: floods a serialized transaction
+- `NEW_BLOCK`: floods a serialized block
+- `GET_CHAIN`: asks another peer for its full chain
+- `CHAIN`: replies with serialized blocks
+
+## 6. Protocol Invariants
+
+- All hashes are SHA-256 digests stored as 32 raw bytes internally and converted to hex when crossing a JSON boundary.
+- Wallet addresses and transaction senders are hex-encoded DER SubjectPublicKeyInfo public keys. The rest of the system treats those strings as opaque identities.
+- Any JSON that contributes to a hash or signature is serialized with sorted keys, so peers independently produce the same byte string.
+- The serialized block `hash` field is for display and transport convenience. Deserialization ignores it, and validation recomputes the hash from the canonical block header.
+- Tracker addresses are the peer listener addresses in `host:port` form, not the ephemeral source ports of tracker TCP connections.
+- New network message types require a message constant, a documented payload shape, and a dispatch branch in the tracker or peer handler.
+
+## 7. Mempool, Forks, and Chain Sync
+
+Peers validate transactions before accepting them into the mempool. The mempool accounts for already-pending transactions from the same sender, so a peer rejects overspends and skipped nonces before mining. When a valid transaction is accepted, it is flooded with `NEW_TX`.
+
+If an incoming block does not extend the local tip, the peer treats it as evidence that it may be behind or on a fork. It asks known peers for their full chains with `GET_CHAIN`, validates each candidate from genesis, and adopts only a strictly longer valid chain. Equal-length and shorter chains are refused.
+
+When a peer learns about new peers from the tracker, it starts a background chain sync and gossips its current mempool to the newcomers. This helps newly joined peers catch up before they mine or receive fresh transactions.
+
+## 8. Demo Application + Dashboard
+
+The demo application is a browser dashboard backed by a FastAPI control plane. It runs the tracker and peers in-process as asyncio tasks so the full network can be demonstrated from one local server while still exercising the real tracker, peer, wallet, transaction, mining, and chain-validation code.
+
+The FastAPI layer exposes:
+
+- `GET /`: returns the dashboard HTML.
+- `GET /api/state`: returns the latest tracker, wallet, peer, mempool, balance, and block snapshot.
+- `POST /api/start`: starts the in-process tracker.
+- `POST /api/wallets`: creates a wallet with an optional initial balance.
+- `POST /api/peers`: creates a peer and optionally enables mining with a selected wallet address.
+- `POST /api/transactions`: creates, signs, validates, and submits a transaction through a selected peer.
+- `WS /ws/state`: pushes a fresh dashboard snapshot every 0.5 seconds.
+
+`DashboardOrchestrator` is the demo control plane. It starts the tracker as an asyncio task, creates peers as asyncio tasks, assigns peer listener ports starting at `127.0.0.1:9201`, and connects all peers to the tracker on `127.0.0.1:9000`. Creating a peer automatically starts the tracker if it is not already running.
+
+Wallets are generated in memory with ECDSA keypairs. Initial wallet balances are seeded into each peer's `Chain` when peers are created, and if a funded wallet is added later the orchestrator seeds existing peers too. Transaction submission computes the next nonce from the sender's confirmed chain nonce plus any pending mempool transactions, signs the transaction with the sender wallet, and calls the selected peer's `submit_tx()`.
+
+The frontend calls the REST endpoints for user actions and uses the WebSocket stream for live rendering. It provides controls to:
+
+- start the tracker,
+- create wallets with optional initial balances,
+- add peers on sequential localhost ports,
+- enable mining for a peer by assigning a miner wallet,
+- submit signed wallet-to-wallet transactions through a selected peer.
+
+It displays:
+
+- network status, peer heights, known-peer counts, mining status, and tip hashes,
+- per-peer wallet balances,
+- blocks on the first peer's chain,
+- per-peer mempool contents.
+
+## 9. Resilience
+
+The project demonstrates the required failure and convergence behavior:
+
+- Invalid signatures and malformed transaction data are rejected.
+- Overspending transactions are rejected before they enter the mempool.
+- Duplicate transaction hashes inside a block are rejected.
+- Tampering with a transaction amount after signing breaks validation.
+- Tampering with a mined nonce breaks proof-of-work validation.
+- Three live peers discover each other through the tracker.
+- Transactions and blocks propagate through peer gossip.
+- Peers converge to the same chain tip after mining and broadcasting.
+- Strict longest-chain fork resolution accepts only a longer valid chain.
+
+## 10. Limitations
+
+- The demo uses seeded initial wallet balances rather than coinbase rewards.
+- Difficulty is fixed per chain instance; dynamic difficulty adjustment is not implemented.
+- Blocks commit to concatenated transaction hashes rather than a Merkle root.
+- Peer gossip is best-effort and does not retry failed outbound sends.
