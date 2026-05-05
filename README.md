@@ -56,6 +56,9 @@ uv sync
 
 This creates/updates the project virtual environment and installs runtime dependencies from `pyproject.toml` and lockfile constraints from `uv.lock`.
 
+Make sure to install uv first
+Mac: brew install uv
+
 ## Compilation / Build
 
 This is a Python-only project, so there is no separate compile step. Dependency resolution and editable package installation are handled by:
@@ -100,8 +103,9 @@ uv run python -m net.peer --port 9201 --tracker-host 127.0.0.1 --tracker-port 90
 ## Tests
 
 ```bash
-uv run python -m unittest tests.test_chain
-uv run python tests/integration_demo.py
+uv run python -m unittest tests.test_chain or python3 tests/test_chain.py
+uv run python tests/integration_demo.py or python3 tests/integration_demo.py
+
 ```
 
 See `TESTING.md` for the full checkpoint list and expected outcomes.
