@@ -11,7 +11,7 @@ import time
 from .block import Block
 
 
-DEFAULT_DIFFICULTY_BITS = 4
+DEFAULT_DIFFICULTY_BITS = 24
 
 
 def meets_difficulty(block_hash: bytes, difficulty_bits: int) -> bool:
@@ -46,3 +46,19 @@ def mine(block: Block, difficulty_bits: int = DEFAULT_DIFFICULTY_BITS,
         if max_iters is not None and iters >= max_iters:
             raise RuntimeError(f"mining exceeded max_iters={max_iters}")
     return block
+
+
+def mine_chunk(block: Block, difficulty_bits: int, max_iters: int) -> bool:
+    """Try at most `max_iters` nonces starting from `block.nonce`.
+
+    Returns True if a valid PoW was found (in which case `block.nonce` is the
+    winning nonce); False otherwise, with `block.nonce` advanced by `max_iters`.
+    Unlike `mine`, this does not touch `block.timestamp` and never raises, so
+    it can be called repeatedly from a cooperative async loop that needs to
+    yield to the event loop between batches.
+    """
+    for _ in range(max_iters):
+        if meets_difficulty(block.hash(), difficulty_bits):
+            return True
+        block.nonce += 1
+    return meets_difficulty(block.hash(), difficulty_bits)

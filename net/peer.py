@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Set
 
 from blockchain.block import Block
 from blockchain.chain import Chain, ValidationError
-from blockchain.pow import meets_difficulty
+from blockchain.pow import mine_chunk
 from blockchain.tx import Transaction
 
 from . import messages as M
@@ -41,6 +41,10 @@ MINE_IDLE_SLEEP_S = 0.5
 MINING_BOOTSTRAP_S = 1.0
 # Read timeout for a CHAIN response after we send GET_CHAIN.
 CHAIN_REQUEST_TIMEOUT_S = 5.0
+# Bound on TCP connect for outbound peer-to-peer dials (flood, GET_CHAIN).
+# Without this, a half-open / stuck remote socket can block the caller (often
+# the mining loop) indefinitely.
+PEER_CONNECT_TIMEOUT_S = 2.0
 
 
 log = logging.getLogger("peer")
@@ -125,6 +129,25 @@ class Peer:
         if added or removed:
             log.info("peer set updated: +%s -%s (now=%d)",
                      sorted(added), sorted(removed), len(self.peers))
+        if added:
+            # We have new peers in the network. Two catch-up jobs run in
+            # background so this handler stays snappy:
+            #   1. Pull chains from the network so we don't sit on a stale
+            #      tip and start mining a doomed fork on top of genesis.
+            #   2. Gossip our current mempool to the newcomers so any txs
+            #      we already accepted aren't trapped on this peer until we
+            #      mine them ourselves. (Receivers dedupe via seen_hashes.)
+            asyncio.create_task(self._sync_chain_from_peers())
+            if self.mempool:
+                asyncio.create_task(self._gossip_mempool_to(sorted(added)))
+
+    async def _gossip_mempool_to(self, addrs: List[str]) -> None:
+        """Push every pending tx in our mempool to each address in `addrs`."""
+        snapshot = list(self.mempool)
+        for tx in snapshot:
+            msg = M.Message(M.NEW_TX, {"tx": tx.to_dict()})
+            for addr in addrs:
+                await self._send_to(addr, msg)
 
     # ---- inbound peer<->peer ------------------------------------------
 
@@ -161,15 +184,25 @@ class Peer:
 
     # ---- handlers ------------------------------------------------------
 
+    async def submit_tx(self, tx: Transaction) -> str:
+        """Validate, remember, and flood a locally-created transaction."""
+        return await self._accept_tx(tx, skip_seen=False)
+
     async def _on_new_tx(self, tx: Transaction) -> None:
-        h = tx.hash().hex()
-        if not self._mark_seen(h):
-            return
         try:
-            self.chain.validate_tx(tx)
+            await self._accept_tx(tx, skip_seen=True)
         except ValidationError as e:
+            h = tx.hash().hex()
             log.info("dropping invalid tx %s: %s", h[:12], e)
-            return
+
+    async def _accept_tx(self, tx: Transaction, *, skip_seen: bool) -> str:
+        h = tx.hash().hex()
+        if skip_seen and h in self.seen_hashes:
+            return h
+        self._validate_tx_for_mempool(tx)
+        if h in self.seen_hashes and self._has_pending_tx(h):
+            return h
+        self._mark_seen(h)
         # Replace any pre-existing pending tx from the same sender at this
         # nonce so the latest signature wins; otherwise append.
         replaced = False
@@ -182,6 +215,45 @@ class Peer:
             self.mempool.append(tx)
         log.info("accepted tx %s into mempool (size=%d)", h[:12], len(self.mempool))
         await self._flood(M.Message(M.NEW_TX, {"tx": tx.to_dict()}))
+        return h
+
+    def _has_pending_tx(self, h: str) -> bool:
+        return any(tx.hash().hex() == h for tx in self.mempool)
+
+    def _validate_tx_for_mempool(self, tx: Transaction) -> None:
+        sim_balances: Dict[str, int] = dict(self.chain.balances)
+        sim_nonces: Dict[str, int] = dict(self.chain.nonces)
+        ordered = sorted(self.mempool, key=lambda t: (t.sender, t.nonce))
+        for pending in ordered:
+            if pending.sender != tx.sender:
+                continue
+            if pending.hash() == tx.hash():
+                continue
+            if pending.amount <= 0 or not pending.verify_signature():
+                continue
+            sender_balance = sim_balances.get(pending.sender, 0)
+            if sender_balance < pending.amount:
+                continue
+            if pending.nonce != sim_nonces.get(pending.sender, 0) + 1:
+                continue
+            sim_balances[pending.sender] = sender_balance - pending.amount
+            sim_balances[pending.recipient] = (
+                sim_balances.get(pending.recipient, 0) + pending.amount
+            )
+            sim_nonces[pending.sender] = pending.nonce
+
+        if not tx.verify_signature():
+            raise ValidationError("bad signature")
+        if tx.amount <= 0:
+            raise ValidationError("amount must be positive")
+        sender_balance = sim_balances.get(tx.sender, 0)
+        if sender_balance < tx.amount:
+            raise ValidationError("insufficient balance")
+        expected_nonce = sim_nonces.get(tx.sender, 0) + 1
+        if tx.nonce != expected_nonce:
+            raise ValidationError(
+                f"bad nonce: expected {expected_nonce}, got {tx.nonce}"
+            )
 
     async def _on_new_block(self, block: Block) -> None:
         h = block.hash().hex()
@@ -227,7 +299,10 @@ class Peer:
         """
         try:
             host, port_s = addr.split(":")
-            reader, writer = await asyncio.open_connection(host, int(port_s))
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, int(port_s)),
+                timeout=PEER_CONNECT_TIMEOUT_S,
+            )
         except Exception as e:
             log.debug("GET_CHAIN connect to %s failed: %s", addr, e)
             return
@@ -337,6 +412,12 @@ class Peer:
             await asyncio.sleep(0.05)
         if self.peers:
             log.info("mining bootstrap done; %d peer(s) known", len(self.peers))
+            # Catch up to the longest chain on the network before mining,
+            # otherwise we'd start producing a doomed fork on top of genesis
+            # while everyone else is at a higher tip.
+            await self._sync_chain_from_peers()
+            log.info("mining bootstrap chain sync done; height=%d",
+                     self.chain.height)
         else:
             log.info("mining bootstrap timeout; mining solo")
 
@@ -352,12 +433,9 @@ class Peer:
                 # a fresh template on the new tip.
                 if self.chain.tip.hash() != tip_at_start:
                     break
-                for _ in range(MINE_CHUNK_NONCES):
-                    if meets_difficulty(template.hash(), self.chain.difficulty_bits):
-                        mined = template
-                        break
-                    template.nonce += 1
-                if mined is not None:
+                if mine_chunk(template, self.chain.difficulty_bits,
+                              MINE_CHUNK_NONCES):
+                    mined = template
                     break
                 await asyncio.sleep(0)
 
@@ -377,23 +455,40 @@ class Peer:
             self._purge_mempool_against_chain()
             log.info("mined block %d (height=%d, nonce=%d)",
                      mined.index, self.chain.height, mined.nonce)
-            await self._flood(M.Message(M.NEW_BLOCK, {"block": mined.to_dict()}))
+            # Fire-and-forget the broadcast: mining must never block on the
+            # network. Per-dial timeouts inside _flood still bound the work.
+            asyncio.create_task(
+                self._flood(M.Message(M.NEW_BLOCK, {"block": mined.to_dict()}))
+            )
             # Tiny pause so we don't pin a CPU when the mempool is empty.
             if not self.mempool:
                 await asyncio.sleep(MINE_IDLE_SLEEP_S)
 
     # ---- outbound flooding --------------------------------------------
 
+    async def _send_to(self, addr: str, msg: M.Message) -> None:
+        """Open a one-shot connection to `addr` and send `msg`. Best-effort.
+
+        Bounded by PEER_CONNECT_TIMEOUT_S so a single stuck remote can't
+        stall the caller (notably the mining loop) indefinitely.
+        """
+        try:
+            host, port_s = addr.split(":")
+            _, w = await asyncio.wait_for(
+                asyncio.open_connection(host, int(port_s)),
+                timeout=PEER_CONNECT_TIMEOUT_S,
+            )
+            try:
+                await M.send(w, msg)
+            finally:
+                w.close()
+        except Exception as e:
+            log.debug("send to %s failed: %s", addr, e)
+
     async def _flood(self, msg: M.Message) -> None:
         """Send `msg` to every peer in self.peers. Best-effort, no retries."""
         for addr in list(self.peers):
-            try:
-                host, port_s = addr.split(":")
-                _, w = await asyncio.open_connection(host, int(port_s))
-                await M.send(w, msg)
-                w.close()
-            except Exception as e:
-                log.debug("flood to %s failed: %s", addr, e)
+            await self._send_to(addr, msg)
 
 
 def main() -> None:

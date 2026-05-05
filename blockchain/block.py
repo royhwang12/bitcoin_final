@@ -25,22 +25,33 @@ class Block:
     timestamp: float
     nonce: int
     txs: List[Transaction] = field(default_factory=list)
+    _tx_commitment_cache: bytes | None = field(
+        default=None, repr=False, compare=False,
+    )
+
+    def _tx_commitment(self) -> bytes:
+        if self._tx_commitment_cache is None:
+            self._tx_commitment_cache = b"".join(t.hash() for t in self.txs)
+        return self._tx_commitment_cache
+
+    def invalidate_tx_cache(self) -> None:
+        """Call after mutating `txs` to force the commitment to be recomputed."""
+        self._tx_commitment_cache = None
 
     def header_bytes(self) -> bytes:
         """Canonical byte serialization of the header fields hashed by PoW.
 
         Includes a commitment to txs via their concatenated hashes (swap this
-        for a Merkle root once `merkle_utils` is wired in).
+        for a Merkle root once `merkle_utils` is wired in). The tx portion is
+        cached because it's invariant during mining (only `nonce` changes).
         """
-        tx_commitment = b"".join(t.hash() for t in self.txs)
-        payload = (
+        return (
             self.index.to_bytes(8, "big")
             + self.prev_hash
             + str(self.timestamp).encode()
             + self.nonce.to_bytes(8, "big")
-            + tx_commitment
+            + self._tx_commitment()
         )
-        return payload
 
     def hash(self) -> bytes:
         return hashlib.sha256(self.header_bytes()).digest()
