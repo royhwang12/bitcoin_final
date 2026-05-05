@@ -75,6 +75,8 @@ bitcoin_final/
 
 ## Requirements
 
+Note: We used uv for python dependencies instead of pip
+
 - Python `3.10+`
 - [`uv`](https://docs.astral.sh/uv/)
 
